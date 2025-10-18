@@ -44,3 +44,8 @@ chrono = "0.4"
 futures = "0.3"
 url = "2.5"
 serde_json = "1.0"
+
+[features]
+# Disabled by default. Enable stylus/tablet input on Wayland (zwp_tablet_v2)
+# Build with: cargo build --features tablet-input
+tablet-input = []

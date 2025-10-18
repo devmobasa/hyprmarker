@@ -27,6 +27,16 @@ use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
+#[cfg(feature = "tablet-input")]
+use wayland_client::Proxy;
+#[cfg(feature = "tablet-input")]
+use wayland_protocols::wp::tablet::zv2::client::{
+    zwp_tablet_manager_v2::ZwpTabletManagerV2,
+    zwp_tablet_pad_v2::ZwpTabletPadV2,
+    zwp_tablet_seat_v2::ZwpTabletSeatV2,
+    zwp_tablet_tool_v2::ZwpTabletToolV2,
+    zwp_tablet_v2::ZwpTabletV2,
+};
 // Removed: Arc, Mutex - not needed after removing WaylandBackend.inner
 
 use crate::capture::{CaptureDestination, CaptureManager, CaptureOutcome};
@@ -78,6 +88,20 @@ struct WaylandState {
 
     // Tokio runtime handle for async operations
     tokio_handle: tokio::runtime::Handle,
+
+    // Tablet protocol objects (feature-gated)
+    #[cfg(feature = "tablet-input")]
+    tablet_manager: Option<ZwpTabletManagerV2>,
+    #[cfg(feature = "tablet-input")]
+    tablet_seats: Vec<ZwpTabletSeatV2>,
+    #[cfg(feature = "tablet-input")]
+    tablets: Vec<ZwpTabletV2>,
+    #[cfg(feature = "tablet-input")]
+    tools: Vec<ZwpTabletToolV2>,
+    #[cfg(feature = "tablet-input")]
+    tablet_settings: crate::input::tablet::TabletSettings,
+    #[cfg(feature = "tablet-input")]
+    tablet_found_logged: bool,
 }
 
 impl WaylandBackend {
@@ -146,6 +170,11 @@ impl WaylandBackend {
             "  Help overlay font size: {}",
             config.ui.help_overlay_style.font_size
         );
+        // Report tablet feature/config status for clarity
+        #[cfg(feature = "tablet-input")]
+        info!("Tablet feature: compiled=yes, runtime_enabled={}", config.tablet.enabled);
+        #[cfg(not(feature = "tablet-input"))]
+        info!("Tablet feature: compiled=no");
 
         // Create font descriptor from config
         let font_descriptor = crate::draw::FontDescriptor::new(
@@ -230,7 +259,51 @@ impl WaylandBackend {
             capture_in_progress: false,
             overlay_hidden_for_capture: false,
             tokio_handle,
+            #[cfg(feature = "tablet-input")]
+            tablet_manager: None,
+            #[cfg(feature = "tablet-input")]
+            tablet_seats: Vec::new(),
+            #[cfg(feature = "tablet-input")]
+            tablets: Vec::new(),
+            #[cfg(feature = "tablet-input")]
+            tools: Vec::new(),
+            #[cfg(feature = "tablet-input")]
+            tablet_settings: crate::input::tablet::TabletSettings::default(),
+            #[cfg(feature = "tablet-input")]
+            tablet_found_logged: false,
         };
+
+        // Initialize tablet manager if compiled and enabled in config
+        #[cfg(feature = "tablet-input")]
+        {
+            if state.config.tablet.enabled {
+                // Bind within the proxy's supported version range to avoid panics
+                match globals.bind::<ZwpTabletManagerV2, _, _>(&qh, 1..=ZwpTabletManagerV2::interface().version, ()) {
+                    Ok(manager) => {
+                        info!("Bound zwp_tablet_manager_v2");
+                        state.tablet_manager = Some(manager);
+                        // Apply settings from config
+                        state.tablet_settings.enabled = true;
+                        state.tablet_settings.pressure_enabled = state.config.tablet.pressure_enabled;
+                        state.tablet_settings.min_thickness = state.config.tablet.min_thickness;
+                        state.tablet_settings.max_thickness = state.config.tablet.max_thickness;
+                        // Initial state: protocol is present, but we haven't seen any tools/devices yet
+                        info!("TABLET NOT FOUND (NO DEVICES)");
+                    }
+                    Err(e) => {
+                        warn!("Tablet protocol not available: {}", e);
+                        info!("TABLET NOT FOUND (PROTOCOL MISSING)");
+                    }
+                }
+            } else {
+                debug!("Tablet input disabled in config");
+                info!("TABLET NOT FOUND (FEATURE DISABLED)");
+            }
+        }
+        #[cfg(not(feature = "tablet-input"))]
+        {
+            info!("TABLET NOT FOUND (FEATURE NOT COMPILED)");
+        }
 
         // Create layer shell surface
         info!("Creating layer shell surface");
@@ -924,6 +997,13 @@ impl SeatHandler for WaylandState {
 
     fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
         debug!("New seat available");
+        #[cfg(feature = "tablet-input")]
+        {
+            if self.tablet_manager.is_some() {
+                // We bind to tablet seat in new_capability to ensure we hold the concrete seat
+                debug!("Tablet manager present; will bind tablet seat on capability");
+            }
+        }
     }
 
     fn new_capability(
@@ -944,6 +1024,21 @@ impl SeatHandler for WaylandState {
             info!("Pointer capability available");
             if self.seat_state.get_pointer(qh, &seat).is_ok() {
                 debug!("Pointer initialized");
+            }
+        }
+
+        // Bind tablet seat for this wl_seat when feature enabled
+        #[cfg(feature = "tablet-input")]
+        {
+            if let Some(manager) = &self.tablet_manager {
+                // Avoid binding multiple times for the same seat; we only need one
+                if self.tablet_seats.is_empty() {
+                    let tseat = manager.get_tablet_seat(&seat, qh, ());
+                    self.tablet_seats.push(tseat);
+                    info!("Tablet seat initialized for seat");
+                } else {
+                    debug!("Tablet seat already initialized; skipping duplicate bind");
+                }
             }
         }
     }
@@ -1192,6 +1287,140 @@ impl ProvidesRegistryState for WaylandState {
     registry_handlers![OutputState, SeatState];
 }
 
+// Tablet protocol dispatch (feature-gated)
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletManagerV2, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletManagerV2,
+        _event: <ZwpTabletManagerV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // No events
+    }
+}
+
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpTabletSeatV2,
+        event: <ZwpTabletSeatV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::Event;
+        match event {
+            Event::TabletAdded { id } => {
+                info!("🖊️  TABLET DEVICE DETECTED");
+                debug!("Tablet ID: {:?}", id.id());
+                state.tablets.push(id);
+                if !state.tablet_found_logged {
+                    state.tablet_found_logged = true;
+                    info!("TABLET FOUND - Total devices: {}", state.tablets.len());
+                }
+            }
+            Event::ToolAdded { id } => {
+                info!("🖊️  TABLET TOOL DETECTED (pen/stylus)");
+                debug!("Tool ID: {:?}", id.id());
+                state.tools.push(id);
+                if !state.tablet_found_logged {
+                    state.tablet_found_logged = true;
+                    info!("TABLET FOUND - Total tools: {}", state.tools.len());
+                }
+            }
+            Event::PadAdded { id } => {
+                debug!("Tablet pad added (ignored)");
+                let _pad: ZwpTabletPadV2 = id;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletV2, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletV2,
+        _event: <ZwpTabletV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // Ignore descriptive events for now
+    }
+}
+
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletToolV2, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpTabletToolV2,
+        event: <ZwpTabletToolV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_tool_v2::Event;
+        match event {
+            Event::ProximityIn { surface, .. } => {
+                if let Some(layer_surface) = &state.layer_surface {
+                    if surface.id() == layer_surface.wl_surface().id() {
+                        info!("✏️  Stylus ENTERED overlay surface");
+                    } else {
+                        debug!("Tablet proximity in on different surface");
+                    }
+                }
+            }
+            Event::ProximityOut => {
+                info!("✏️  Stylus LEFT overlay surface");
+            }
+            Event::Down { .. } => {
+                info!("✏️  Stylus DOWN at ({}, {})", state.current_mouse_x, state.current_mouse_y);
+                state.input_state.on_mouse_press(
+                    MouseButton::Left,
+                    state.current_mouse_x,
+                    state.current_mouse_y,
+                );
+                state.input_state.needs_redraw = true;
+            }
+            Event::Up { .. } => {
+                info!("✏️  Stylus UP at ({}, {})", state.current_mouse_x, state.current_mouse_y);
+                state.input_state.on_mouse_release(
+                    MouseButton::Left,
+                    state.current_mouse_x,
+                    state.current_mouse_y,
+                );
+                state.input_state.needs_redraw = true;
+            }
+            Event::Motion { x, y } => {
+                debug!("Stylus motion: ({}, {})", x, y);
+                state.current_mouse_x = x as i32;
+                state.current_mouse_y = y as i32;
+                state.input_state.on_mouse_motion(state.current_mouse_x, state.current_mouse_y);
+            }
+            Event::Pressure { pressure } => {
+                let p01 = (pressure as f64) / 65535.0;
+                debug!("Stylus pressure: {} (raw: {}/65535)", p01, pressure);
+                #[allow(unused_imports)]
+                use crate::input::tablet::apply_pressure_to_state;
+                apply_pressure_to_state(p01, &mut state.input_state, state.tablet_settings);
+            }
+            Event::Frame { .. } => {
+                // Frame events batch tablet events together
+                debug!("Tablet frame event");
+            }
+            _ => {
+                debug!("Unhandled tablet tool event: {:?}", event);
+            }
+        }
+    }
+}
+
 // Implement Dispatch for wl_buffer (required for buffer lifecycle)
 impl Dispatch<wl_buffer::WlBuffer, ()> for WaylandState {
     fn event(
@@ -1214,6 +1443,7 @@ fn keysym_to_key(keysym: Keysym) -> Key {
         Keysym::Escape => Key::Escape,
         Keysym::Return => Key::Return,
         Keysym::BackSpace => Key::Backspace,
+        // Keysym::Caps_Lock intentionally not mapped
         Keysym::Tab => Key::Tab,
         Keysym::space => Key::Space,
         Keysym::Shift_L | Keysym::Shift_R => Key::Shift,

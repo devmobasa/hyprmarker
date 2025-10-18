@@ -9,6 +9,8 @@ pub mod events;
 pub mod modifiers;
 pub mod state;
 pub mod tool;
+#[cfg(feature = "tablet-input")]
+pub mod tablet;
 
 // Re-export commonly used types at module level
 pub use board_mode::BoardMode;

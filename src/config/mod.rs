@@ -17,6 +17,8 @@ pub use types::{
     ArrowConfig, BoardConfig, CaptureConfig, DrawingConfig, HelpOverlayStyle, PerformanceConfig,
     StatusBarStyle, UiConfig,
 };
+#[cfg(feature = "tablet-input")]
+pub use types::TabletInputConfig;
 
 // Re-export for public API (unused internally but part of public interface)
 #[allow(unused_imports)]
@@ -85,6 +87,11 @@ pub struct Config {
     /// Screenshot capture settings
     #[serde(default)]
     pub capture: CaptureConfig,
+
+    /// Tablet/stylus input settings (feature-gated)
+    #[cfg(feature = "tablet-input")]
+    #[serde(default)]
+    pub tablet: TabletInputConfig,
 }
 
 impl Config {
@@ -174,6 +181,17 @@ impl Config {
                 self.drawing.font_style
             );
             self.drawing.font_style = "normal".to_string();
+        }
+
+        // Feature-gated validation
+        #[cfg(feature = "tablet-input")]
+        {
+            // Ensure min <= max and clamp to overall allowed thickness range
+            if self.tablet.min_thickness > self.tablet.max_thickness {
+                std::mem::swap(&mut self.tablet.min_thickness, &mut self.tablet.max_thickness);
+            }
+            self.tablet.min_thickness = self.tablet.min_thickness.clamp(1.0, 20.0);
+            self.tablet.max_thickness = self.tablet.max_thickness.clamp(1.0, 20.0);
         }
 
         // Validate board mode default

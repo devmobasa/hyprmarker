@@ -31,6 +31,7 @@ https://github.com/user-attachments/assets/7c4b36ec-0f6a-4aad-93fb-f9c966d43873
 - [Troubleshooting](#troubleshooting)
 - [Additional Information](#additional-information)
 - [Contributing & Credits](#contributing--credits)
+ - [Tablet/Stylus Input (optional)](#tabletstylus-input-optional)
 
 ## Quick Start
 
@@ -116,6 +117,24 @@ cargo build --release
 ```
 
 The binary will be at `target/release/hyprmarker`.
+
+#### Tablet/Stylus input (optional)
+
+Tablet support for Wayland (zwp_tablet_v2) is feature-gated and disabled by default to avoid impacting existing setups. Build with the feature and enable it at runtime in the config:
+
+```bash
+cargo build --release --features tablet-input
+```
+
+Then set in `~/.config/hyprmarker/config.toml`:
+
+```toml
+[tablet]
+enabled = true
+pressure_enabled = true
+min_thickness = 1.0
+max_thickness = 8.0
+```
 
 ### Manual Install Script
 
