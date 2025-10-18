@@ -1315,6 +1315,9 @@ impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
         use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::Event;
         match event {
             Event::TabletAdded { id } => {
+                if let Err(e) = qh.assign(&id, ()) {
+                    warn!("Failed to assign tablet object: {}", e);
+                }
                 info!("🖊️  TABLET DEVICE DETECTED");
                 debug!("Tablet ID: {:?}", id.id());
                 state.tablets.push(id);
@@ -1324,6 +1327,9 @@ impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
                 }
             }
             Event::ToolAdded { id } => {
+                if let Err(e) = qh.assign(&id, ()) {
+                    warn!("Failed to assign tablet tool: {}", e);
+                }
                 info!("🖊️  TABLET TOOL DETECTED (pen/stylus)");
                 debug!("Tool ID: {:?}", id.id());
                 state.tools.push(id);
@@ -1333,6 +1339,9 @@ impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
                 }
             }
             Event::PadAdded { id } => {
+                if let Err(e) = qh.assign(&id, ()) {
+                    warn!("Failed to assign tablet pad: {}", e);
+                }
                 debug!("Tablet pad added (ignored)");
                 let _pad: ZwpTabletPadV2 = id;
             }
