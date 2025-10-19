@@ -1315,9 +1315,6 @@ impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
         use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::Event;
         match event {
             Event::TabletAdded { id } => {
-                if let Err(e) = qh.assign(&id, ()) {
-                    warn!("Failed to assign tablet object: {}", e);
-                }
                 info!("🖊️  TABLET DEVICE DETECTED");
                 debug!("Tablet ID: {:?}", id.id());
                 state.tablets.push(id);
@@ -1327,9 +1324,6 @@ impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
                 }
             }
             Event::ToolAdded { id } => {
-                if let Err(e) = qh.assign(&id, ()) {
-                    warn!("Failed to assign tablet tool: {}", e);
-                }
                 info!("🖊️  TABLET TOOL DETECTED (pen/stylus)");
                 debug!("Tool ID: {:?}", id.id());
                 state.tools.push(id);
@@ -1339,15 +1333,18 @@ impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
                 }
             }
             Event::PadAdded { id } => {
-                if let Err(e) = qh.assign(&id, ()) {
-                    warn!("Failed to assign tablet pad: {}", e);
-                }
                 debug!("Tablet pad added (ignored)");
                 let _pad: ZwpTabletPadV2 = id;
             }
             _ => {}
         }
     }
+
+    wayland_client::event_created_child!(WaylandState, ZwpTabletSeatV2, [
+        0 => (ZwpTabletV2, ()),
+        1 => (ZwpTabletToolV2, ()),
+        2 => (ZwpTabletPadV2, ()),
+    ]);
 }
 
 #[cfg(feature = "tablet-input")]
@@ -1361,6 +1358,20 @@ impl Dispatch<ZwpTabletV2, ()> for WaylandState {
         _qh: &QueueHandle<Self>,
     ) {
         // Ignore descriptive events for now
+    }
+}
+
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletPadV2, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletPadV2,
+        _event: <ZwpTabletPadV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // Pad events are ignored for now.
     }
 }
 
