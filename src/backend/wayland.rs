@@ -32,6 +32,9 @@ use wayland_client::Proxy;
 #[cfg(feature = "tablet-input")]
 use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_manager_v2::ZwpTabletManagerV2,
+    zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2,
+    zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2,
+    zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
     zwp_tablet_pad_v2::ZwpTabletPadV2,
     zwp_tablet_seat_v2::ZwpTabletSeatV2,
     zwp_tablet_tool_v2::ZwpTabletToolV2,
@@ -98,6 +101,14 @@ struct WaylandState {
     tablets: Vec<ZwpTabletV2>,
     #[cfg(feature = "tablet-input")]
     tools: Vec<ZwpTabletToolV2>,
+    #[cfg(feature = "tablet-input")]
+    pads: Vec<ZwpTabletPadV2>,
+    #[cfg(feature = "tablet-input")]
+    pad_groups: Vec<ZwpTabletPadGroupV2>,
+    #[cfg(feature = "tablet-input")]
+    pad_rings: Vec<ZwpTabletPadRingV2>,
+    #[cfg(feature = "tablet-input")]
+    pad_strips: Vec<ZwpTabletPadStripV2>,
     #[cfg(feature = "tablet-input")]
     tablet_settings: crate::input::tablet::TabletSettings,
     #[cfg(feature = "tablet-input")]
@@ -267,6 +278,14 @@ impl WaylandBackend {
             tablets: Vec::new(),
             #[cfg(feature = "tablet-input")]
             tools: Vec::new(),
+            #[cfg(feature = "tablet-input")]
+            pads: Vec::new(),
+            #[cfg(feature = "tablet-input")]
+            pad_groups: Vec::new(),
+            #[cfg(feature = "tablet-input")]
+            pad_rings: Vec::new(),
+            #[cfg(feature = "tablet-input")]
+            pad_strips: Vec::new(),
             #[cfg(feature = "tablet-input")]
             tablet_settings: crate::input::tablet::TabletSettings::default(),
             #[cfg(feature = "tablet-input")]
@@ -1333,8 +1352,9 @@ impl Dispatch<ZwpTabletSeatV2, ()> for WaylandState {
                 }
             }
             Event::PadAdded { id } => {
-                debug!("Tablet pad added (ignored)");
-                let _pad: ZwpTabletPadV2 = id;
+                info!("🖊️  TABLET PAD DETECTED");
+                debug!("Pad ID: {:?}", id.id());
+                state.pads.push(id);
             }
             _ => {}
         }
@@ -1364,14 +1384,168 @@ impl Dispatch<ZwpTabletV2, ()> for WaylandState {
 #[cfg(feature = "tablet-input")]
 impl Dispatch<ZwpTabletPadV2, ()> for WaylandState {
     fn event(
-        _state: &mut Self,
-        _proxy: &ZwpTabletPadV2,
-        _event: <ZwpTabletPadV2 as wayland_client::Proxy>::Event,
+        state: &mut Self,
+        proxy: &ZwpTabletPadV2,
+        event: <ZwpTabletPadV2 as wayland_client::Proxy>::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        // Pad events are ignored for now.
+        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_v2::Event;
+        match event {
+            Event::Group { pad_group } => {
+                debug!("Tablet pad group announced: {:?}", pad_group.id());
+                state.pad_groups.push(pad_group);
+            }
+            Event::Path { path } => {
+                debug!("Tablet pad path: {}", path);
+            }
+            Event::Buttons { buttons } => {
+                debug!("Tablet pad button count: {}", buttons);
+            }
+            Event::Done => {
+                debug!("Tablet pad description complete");
+            }
+            Event::Button { time, button, state: button_state } => {
+                debug!(
+                    "Tablet pad button event: index {} -> {:?} @ {}",
+                    button, button_state, time
+                );
+            }
+            Event::Enter { serial, tablet, surface } => {
+                debug!(
+                    "Tablet pad entered surface {:?} (tablet {:?}) serial {}",
+                    surface.id(),
+                    tablet.id(),
+                    serial
+                );
+            }
+            Event::Leave { serial, surface } => {
+                debug!(
+                    "Tablet pad left surface {:?} serial {}",
+                    surface.id(), serial
+                );
+            }
+            Event::Removed => {
+                info!("Tablet pad removed");
+                let pad_id = proxy.id();
+                state.pads.retain(|pad| pad.id() != pad_id);
+                state.pad_groups.clear();
+                state.pad_rings.clear();
+                state.pad_strips.clear();
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(WaylandState, ZwpTabletPadV2, [
+        wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_v2::EVT_GROUP_OPCODE =>
+            (ZwpTabletPadGroupV2, ()),
+    ]);
+}
+
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletPadGroupV2, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpTabletPadGroupV2,
+        event: <ZwpTabletPadGroupV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_group_v2::Event;
+        match event {
+            Event::Buttons { buttons } => {
+                debug!("Tablet pad group buttons: {:?}", buttons);
+            }
+            Event::Ring { ring } => {
+                debug!("Tablet pad ring announced: {:?}", ring.id());
+                state.pad_rings.push(ring);
+            }
+            Event::Strip { strip } => {
+                debug!("Tablet pad strip announced: {:?}", strip.id());
+                state.pad_strips.push(strip);
+            }
+            Event::Modes { modes } => {
+                debug!("Tablet pad group modes: {}", modes);
+            }
+            Event::Done => {
+                debug!("Tablet pad group description complete");
+            }
+            Event::ModeSwitch { time, serial, mode } => {
+                debug!(
+                    "Tablet pad group mode switch -> mode {} (serial {}, time {})",
+                    mode, serial, time
+                );
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(WaylandState, ZwpTabletPadGroupV2, [
+        wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_group_v2::EVT_RING_OPCODE =>
+            (ZwpTabletPadRingV2, ()),
+        wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_group_v2::EVT_STRIP_OPCODE =>
+            (ZwpTabletPadStripV2, ()),
+    ]);
+}
+
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletPadRingV2, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletPadRingV2,
+        event: <ZwpTabletPadRingV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_ring_v2::Event;
+        match event {
+            Event::Source { source } => {
+                debug!("Tablet pad ring source: {:?}", source);
+            }
+            Event::Angle { degrees } => {
+                debug!("Tablet pad ring angle: {:?}", degrees);
+            }
+            Event::Stop => {
+                debug!("Tablet pad ring interaction stopped");
+            }
+            Event::Frame { time } => {
+                debug!("Tablet pad ring frame @ {}", time);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "tablet-input")]
+impl Dispatch<ZwpTabletPadStripV2, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpTabletPadStripV2,
+        event: <ZwpTabletPadStripV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use wayland_protocols::wp::tablet::zv2::client::zwp_tablet_pad_strip_v2::Event;
+        match event {
+            Event::Source { source } => {
+                debug!("Tablet pad strip source: {:?}", source);
+            }
+            Event::Position { position } => {
+                debug!("Tablet pad strip position: {}", position);
+            }
+            Event::Stop => {
+                debug!("Tablet pad strip interaction stopped");
+            }
+            Event::Frame { time } => {
+                debug!("Tablet pad strip frame @ {}", time);
+            }
+            _ => {}
+        }
     }
 }
 
