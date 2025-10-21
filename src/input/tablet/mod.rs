@@ -47,11 +47,13 @@ pub fn apply_pressure_to_state(pressure01: f64, state: &mut InputState, settings
     if (new_thickness - state.current_thickness).abs() > 0.1 {
         log::debug!(
             "Pressure {} → thickness {:.1}px (range: {:.1}-{:.1})",
-            p, new_thickness, settings.min_thickness, settings.max_thickness
+            p,
+            new_thickness,
+            settings.min_thickness,
+            settings.max_thickness
         );
     }
 
     state.current_thickness = new_thickness;
     state.needs_redraw = true;
 }
-

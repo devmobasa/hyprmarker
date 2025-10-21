@@ -22,23 +22,19 @@ use smithay_client_toolkit::{
     },
     shm::{Shm, ShmHandler, slot::SlotPool},
 };
+#[cfg(feature = "tablet-input")]
+use wayland_client::Proxy;
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 #[cfg(feature = "tablet-input")]
-use wayland_client::Proxy;
-#[cfg(feature = "tablet-input")]
 use wayland_protocols::wp::tablet::zv2::client::{
-    zwp_tablet_manager_v2::ZwpTabletManagerV2,
-    zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2,
-    zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2,
-    zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
-    zwp_tablet_pad_v2::ZwpTabletPadV2,
-    zwp_tablet_seat_v2::ZwpTabletSeatV2,
-    zwp_tablet_tool_v2::ZwpTabletToolV2,
-    zwp_tablet_v2::ZwpTabletV2,
+    zwp_tablet_manager_v2::ZwpTabletManagerV2, zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2,
+    zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2, zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
+    zwp_tablet_pad_v2::ZwpTabletPadV2, zwp_tablet_seat_v2::ZwpTabletSeatV2,
+    zwp_tablet_tool_v2::ZwpTabletToolV2, zwp_tablet_v2::ZwpTabletV2,
 };
 // Removed: Arc, Mutex - not needed after removing WaylandBackend.inner
 
@@ -113,6 +109,12 @@ struct WaylandState {
     tablet_settings: crate::input::tablet::TabletSettings,
     #[cfg(feature = "tablet-input")]
     tablet_found_logged: bool,
+    #[cfg(feature = "tablet-input")]
+    stylus_tip_down: bool,
+    #[cfg(feature = "tablet-input")]
+    stylus_base_thickness: Option<f64>,
+    #[cfg(feature = "tablet-input")]
+    stylus_pressure_thickness: Option<f64>,
 }
 
 impl WaylandBackend {
@@ -183,7 +185,10 @@ impl WaylandBackend {
         );
         // Report tablet feature/config status for clarity
         #[cfg(feature = "tablet-input")]
-        info!("Tablet feature: compiled=yes, runtime_enabled={}", config.tablet.enabled);
+        info!(
+            "Tablet feature: compiled=yes, runtime_enabled={}",
+            config.tablet.enabled
+        );
         #[cfg(not(feature = "tablet-input"))]
         info!("Tablet feature: compiled=no");
 
@@ -290,6 +295,12 @@ impl WaylandBackend {
             tablet_settings: crate::input::tablet::TabletSettings::default(),
             #[cfg(feature = "tablet-input")]
             tablet_found_logged: false,
+            #[cfg(feature = "tablet-input")]
+            stylus_tip_down: false,
+            #[cfg(feature = "tablet-input")]
+            stylus_base_thickness: None,
+            #[cfg(feature = "tablet-input")]
+            stylus_pressure_thickness: None,
         };
 
         // Initialize tablet manager if compiled and enabled in config
@@ -297,13 +308,18 @@ impl WaylandBackend {
         {
             if state.config.tablet.enabled {
                 // Bind within the proxy's supported version range to avoid panics
-                match globals.bind::<ZwpTabletManagerV2, _, _>(&qh, 1..=ZwpTabletManagerV2::interface().version, ()) {
+                match globals.bind::<ZwpTabletManagerV2, _, _>(
+                    &qh,
+                    1..=ZwpTabletManagerV2::interface().version,
+                    (),
+                ) {
                     Ok(manager) => {
                         info!("Bound zwp_tablet_manager_v2");
                         state.tablet_manager = Some(manager);
                         // Apply settings from config
                         state.tablet_settings.enabled = true;
-                        state.tablet_settings.pressure_enabled = state.config.tablet.pressure_enabled;
+                        state.tablet_settings.pressure_enabled =
+                            state.config.tablet.pressure_enabled;
                         state.tablet_settings.min_thickness = state.config.tablet.min_thickness;
                         state.tablet_settings.max_thickness = state.config.tablet.max_thickness;
                         // Initial state: protocol is present, but we haven't seen any tools/devices yet
@@ -1115,8 +1131,21 @@ impl KeyboardHandler for WaylandState {
     ) {
         let key = keysym_to_key(event.keysym);
         debug!("Key pressed: {:?}", key);
+        let prev_thickness = self.input_state.current_thickness;
         self.input_state.on_key_press(key);
         self.input_state.needs_redraw = true;
+
+        #[cfg(feature = "tablet-input")]
+        {
+            if (self.input_state.current_thickness - prev_thickness).abs() > f64::EPSILON {
+                self.stylus_base_thickness = Some(self.input_state.current_thickness);
+                if self.stylus_tip_down {
+                    self.stylus_pressure_thickness = Some(self.input_state.current_thickness);
+                } else {
+                    self.stylus_pressure_thickness = None;
+                }
+            }
+        }
 
         // Check for pending capture actions
         if let Some(action) = self.input_state.take_pending_capture_action() {
@@ -1164,8 +1193,21 @@ impl KeyboardHandler for WaylandState {
         // Handle key repeat - treat like a regular key press
         let key = keysym_to_key(event.keysym);
         debug!("Key repeated: {:?}", key);
+        let prev_thickness = self.input_state.current_thickness;
         self.input_state.on_key_press(key);
         self.input_state.needs_redraw = true;
+
+        #[cfg(feature = "tablet-input")]
+        {
+            if (self.input_state.current_thickness - prev_thickness).abs() > f64::EPSILON {
+                self.stylus_base_thickness = Some(self.input_state.current_thickness);
+                if self.stylus_tip_down {
+                    self.stylus_pressure_thickness = Some(self.input_state.current_thickness);
+                } else {
+                    self.stylus_pressure_thickness = None;
+                }
+            }
+        }
     }
 }
 
@@ -1277,6 +1319,17 @@ impl PointerHandler for WaylandState {
                                 self.input_state.current_thickness
                             );
                             self.input_state.needs_redraw = true;
+                            #[cfg(feature = "tablet-input")]
+                            {
+                                self.stylus_base_thickness =
+                                    Some(self.input_state.current_thickness);
+                                if self.stylus_tip_down {
+                                    self.stylus_pressure_thickness =
+                                        Some(self.input_state.current_thickness);
+                                } else {
+                                    self.stylus_pressure_thickness = None;
+                                }
+                            }
                         } else if scroll_direction < 0 {
                             // Scroll down = increase thickness
                             self.input_state.current_thickness =
@@ -1286,6 +1339,17 @@ impl PointerHandler for WaylandState {
                                 self.input_state.current_thickness
                             );
                             self.input_state.needs_redraw = true;
+                            #[cfg(feature = "tablet-input")]
+                            {
+                                self.stylus_base_thickness =
+                                    Some(self.input_state.current_thickness);
+                                if self.stylus_tip_down {
+                                    self.stylus_pressure_thickness =
+                                        Some(self.input_state.current_thickness);
+                                } else {
+                                    self.stylus_pressure_thickness = None;
+                                }
+                            }
                         }
                     }
                 }
@@ -1403,13 +1467,21 @@ impl Dispatch<ZwpTabletPadV2, ()> for WaylandState {
             Event::Done => {
                 debug!("Tablet pad description complete");
             }
-            Event::Button { time, button, state: button_state } => {
+            Event::Button {
+                time,
+                button,
+                state: button_state,
+            } => {
                 debug!(
                     "Tablet pad button event: index {} -> {:?} @ {}",
                     button, button_state, time
                 );
             }
-            Event::Enter { serial, tablet, surface } => {
+            Event::Enter {
+                serial,
+                tablet,
+                surface,
+            } => {
                 debug!(
                     "Tablet pad entered surface {:?} (tablet {:?}) serial {}",
                     surface.id(),
@@ -1420,7 +1492,8 @@ impl Dispatch<ZwpTabletPadV2, ()> for WaylandState {
             Event::Leave { serial, surface } => {
                 debug!(
                     "Tablet pad left surface {:?} serial {}",
-                    surface.id(), serial
+                    surface.id(),
+                    serial
                 );
             }
             Event::Removed => {
@@ -1562,6 +1635,9 @@ impl Dispatch<ZwpTabletToolV2, ()> for WaylandState {
                 if let Some(layer_surface) = &state.layer_surface {
                     if surface.id() == layer_surface.wl_surface().id() {
                         info!("✏️  Stylus ENTERED overlay surface");
+                        state.stylus_tip_down = false;
+                        state.stylus_base_thickness = Some(state.input_state.current_thickness);
+                        state.stylus_pressure_thickness = None;
                     } else {
                         debug!("Tablet proximity in on different surface");
                     }
@@ -1569,9 +1645,17 @@ impl Dispatch<ZwpTabletToolV2, ()> for WaylandState {
             }
             Event::ProximityOut => {
                 info!("✏️  Stylus LEFT overlay surface");
+                state.stylus_tip_down = false;
+                state.stylus_pressure_thickness = None;
             }
             Event::Down { .. } => {
-                info!("✏️  Stylus DOWN at ({}, {})", state.current_mouse_x, state.current_mouse_y);
+                state.stylus_tip_down = true;
+                state.stylus_base_thickness = Some(state.input_state.current_thickness);
+                state.stylus_pressure_thickness = Some(state.input_state.current_thickness);
+                info!(
+                    "✏️  Stylus DOWN at ({}, {})",
+                    state.current_mouse_x, state.current_mouse_y
+                );
                 state.input_state.on_mouse_press(
                     MouseButton::Left,
                     state.current_mouse_x,
@@ -1580,7 +1664,17 @@ impl Dispatch<ZwpTabletToolV2, ()> for WaylandState {
                 state.input_state.needs_redraw = true;
             }
             Event::Up { .. } => {
-                info!("✏️  Stylus UP at ({}, {})", state.current_mouse_x, state.current_mouse_y);
+                state.stylus_tip_down = false;
+                if let Some(base) = state.stylus_base_thickness {
+                    state.input_state.current_thickness = base;
+                } else if let Some(pressure_thickness) = state.stylus_pressure_thickness {
+                    state.input_state.current_thickness = pressure_thickness;
+                }
+                state.stylus_pressure_thickness = None;
+                info!(
+                    "✏️  Stylus UP at ({}, {})",
+                    state.current_mouse_x, state.current_mouse_y
+                );
                 state.input_state.on_mouse_release(
                     MouseButton::Left,
                     state.current_mouse_x,
@@ -1592,14 +1686,27 @@ impl Dispatch<ZwpTabletToolV2, ()> for WaylandState {
                 debug!("Stylus motion: ({}, {})", x, y);
                 state.current_mouse_x = x as i32;
                 state.current_mouse_y = y as i32;
-                state.input_state.on_mouse_motion(state.current_mouse_x, state.current_mouse_y);
+                state
+                    .input_state
+                    .on_mouse_motion(state.current_mouse_x, state.current_mouse_y);
+                if state.stylus_tip_down {
+                    state.stylus_pressure_thickness = Some(state.input_state.current_thickness);
+                }
             }
             Event::Pressure { pressure } => {
                 let p01 = (pressure as f64) / 65535.0;
                 debug!("Stylus pressure: {} (raw: {}/65535)", p01, pressure);
-                #[allow(unused_imports)]
-                use crate::input::tablet::apply_pressure_to_state;
-                apply_pressure_to_state(p01, &mut state.input_state, state.tablet_settings);
+                if pressure == 0 {
+                    debug!("Stylus pressure reported 0; keeping previous thickness");
+                    if state.stylus_tip_down {
+                        state.stylus_pressure_thickness = Some(state.input_state.current_thickness);
+                    }
+                } else {
+                    #[allow(unused_imports)]
+                    use crate::input::tablet::apply_pressure_to_state;
+                    apply_pressure_to_state(p01, &mut state.input_state, state.tablet_settings);
+                    state.stylus_pressure_thickness = Some(state.input_state.current_thickness);
+                }
             }
             Event::Frame { .. } => {
                 // Frame events batch tablet events together

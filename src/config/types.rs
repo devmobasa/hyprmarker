@@ -229,7 +229,7 @@ impl Default for HelpOverlayStyle {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "tablet-input")]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TabletInputConfig {
     /// Enable tablet/stylus events at runtime (feature must be compiled in).
     #[serde(default = "default_tablet_enabled")]

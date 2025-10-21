@@ -13,12 +13,12 @@ pub mod types;
 // Re-export commonly used types at module level
 pub use enums::StatusPosition;
 pub use keybindings::{Action, KeyBinding, KeybindingsConfig};
+#[cfg(feature = "tablet-input")]
+pub use types::TabletInputConfig;
 pub use types::{
     ArrowConfig, BoardConfig, CaptureConfig, DrawingConfig, HelpOverlayStyle, PerformanceConfig,
     StatusBarStyle, UiConfig,
 };
-#[cfg(feature = "tablet-input")]
-pub use types::TabletInputConfig;
 
 // Re-export for public API (unused internally but part of public interface)
 #[allow(unused_imports)]
@@ -198,7 +198,10 @@ impl Config {
         {
             // Ensure min <= max and clamp to overall allowed thickness range
             if self.tablet.min_thickness > self.tablet.max_thickness {
-                std::mem::swap(&mut self.tablet.min_thickness, &mut self.tablet.max_thickness);
+                std::mem::swap(
+                    &mut self.tablet.min_thickness,
+                    &mut self.tablet.max_thickness,
+                );
             }
             self.tablet.min_thickness = self.tablet.min_thickness.clamp(1.0, 20.0);
             self.tablet.max_thickness = self.tablet.max_thickness.clamp(1.0, 20.0);
